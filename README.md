@@ -2,6 +2,10 @@
 
 Simulador web do salto de paraquedas da apresentação de Cálculo 1 (Bruno, João Vitor e Pedro).
 
+**Acesse online:** https://plc232007.github.io/simulador-paraquedas/
+
+<img src="qrcode.png" width="200" alt="QR code do simulador">
+
 ## Como abrir
 
 **Dê dois cliques em `index.html`.** Não precisa de internet, instalação nem servidor.
