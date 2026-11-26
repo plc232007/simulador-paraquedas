@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador de Queda Livre</title>
+  <meta name="description" content="Simulador de salto de paraquedas: derivadas, integrais, limites e exponencial aplicados à queda livre.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <noscript><p class="noscript">Este simulador precisa de JavaScript ativado.</p></noscript>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="kicker">Cálculo 1 · Bruno, João Vitor e Pedro</span>
+      <h1>Queda livre e precisão matemática</h1>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Seções do simulador">
+      <button class="tab" role="tab" id="tabbtn-sim" aria-controls="tab-sim" aria-selected="true" data-tab="sim">
+        <span class="tab-num">▶</span><span class="tab-txt">Simulação</span>
+      </button>
+      <button class="tab" role="tab" id="tabbtn-r1" aria-controls="tab-r1" aria-selected="false" data-tab="r1" tabindex="-1">
+        <span class="tab-num">1</span><span class="tab-txt">Sem resistência</span>
+      </button>
+      <button class="tab" role="tab" id="tabbtn-r2" aria-controls="tab-r2" aria-selected="false" data-tab="r2" tabindex="-1">
+        <span class="tab-num">2</span><span class="tab-txt">Altímetro</span>
+      </button>
+      <button class="tab" role="tab" id="tabbtn-r3" aria-controls="tab-r3" aria-selected="false" data-tab="r3" tabindex="-1">
+        <span class="tab-num">3</span><span class="tab-txt">Velocidade terminal</span>
+      </button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ======================= SIMULAÇÃO ======================= -->
+    <section class="tabpanel active" id="tab-sim" role="tabpanel" aria-labelledby="tabbtn-sim">
+      <div class="sim-grid">
+
+        <aside class="card controls" aria-label="Parâmetros">
+          <div class="card-head">
+            <h2>Parâmetros</h2>
+            <button class="btn ghost small" id="btn-defaults" title="Volta aos valores dos slides">Valores dos slides</button>
+          </div>
+
+          <fieldset>
+            <legend>Paraquedista</legend>
+            <div class="field">
+              <label for="in-m">Massa (pessoa + equipamento)</label>
+              <div class="range-row"><input type="range" id="in-m" data-key="m" min="50" max="150" step="1"><output for="in-m" id="out-m"></output></div>
+            </div>
+            <div class="field">
+              <label for="in-h0">Altitude de saída do avião</label>
+              <div class="range-row"><input type="range" id="in-h0" data-key="h0" min="1000" max="6000" step="100"><output for="in-h0" id="out-h0"></output></div>
+            </div>
+            <div class="field">
+              <label for="in-area">Área frontal do corpo (A)</label>
+              <div class="range-row"><input type="range" id="in-area" data-key="area" min="0.3" max="1.2" step="0.05"><output for="in-area" id="out-area"></output></div>
+              <p class="hint">0,7 m² = barriga para baixo · 0,3 m² = de cabeça</p>
+            </div>
+            <div class="field">
+              <label for="in-cd">Coeficiente de arrasto (C<sub>d</sub>)</label>
+              <div class="range-row"><input type="range" id="in-cd" data-key="cd" min="0.5" max="1.5" step="0.05"><output for="in-cd" id="out-cd"></output></div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Paraquedas</legend>
+            <label class="check"><input type="checkbox" id="in-parachute" data-key="parachute"> Abrir o paraquedas</label>
+            <div class="field" data-needs="parachute">
+              <label for="in-deployAlt">Altitude de abertura</label>
+              <div class="range-row"><input type="range" id="in-deployAlt" data-key="deployAlt" min="400" max="3800" step="50"><output for="in-deployAlt" id="out-deployAlt"></output></div>
+            </div>
+            <div class="field" data-needs="parachute">
+              <label for="in-canopyArea">Área do velame</label>
+              <div class="range-row"><input type="range" id="in-canopyArea" data-key="canopyArea" min="10" max="60" step="1"><output for="in-canopyArea" id="out-canopyArea"></output></div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Atmosfera</legend>
+            <label class="check"><input type="checkbox" id="in-varyDensity" data-key="varyDensity"> Ar mais rarefeito no alto <span class="hint">(usa a Régua 2)</span></label>
+          </fieldset>
+        </aside>
+
+        <div class="card stage">
+          <div class="sky-wrap"><canvas id="sky" aria-label="Animação do salto" role="img"></canvas></div>
+          <div class="transport">
+            <button class="btn primary" id="btn-play" aria-keyshortcuts="Space">▶ Saltar</button>
+            <button class="btn" id="btn-reset" aria-keyshortcuts="R">↺ Reiniciar</button>
+            <label class="speed">Ritmo
+              <select id="sel-speed">
+                <option value="1">1×</option>
+                <option value="2">2×</option>
+                <option value="5" selected>5×</option>
+                <option value="10">10×</option>
+                <option value="20">20×</option>
+              </select>
+            </label>
+            <input type="range" id="scrub" min="0" max="100" step="any" value="0" aria-label="Linha do tempo">
+            <span class="clock" id="clock">t = 0,0 s</span>
+          </div>
+        </div>
+
+        <aside class="readouts" aria-live="off">
+          <div class="card lane vac">
+            <h3><span class="swatch vac"></span>Sem resistência do ar</h3>
+            <dl>
+              <div><dt>Altitude</dt><dd id="ro-vac-y">—</dd></div>
+              <div><dt>Velocidade</dt><dd id="ro-vac-v">—</dd></div>
+              <div><dt>Aceleração</dt><dd id="ro-vac-a">—</dd></div>
+            </dl>
+            <p class="status" id="st-vac"></p>
+          </div>
+          <div class="card lane real">
+            <h3><span class="swatch real"></span>Com resistência do ar</h3>
+            <dl>
+              <div><dt>Altitude</dt><dd id="ro-real-y">—</dd></div>
+              <div><dt>Velocidade</dt><dd id="ro-real-v">—</dd></div>
+              <div><dt>Aceleração</dt><dd id="ro-real-a">—</dd></div>
+              <div><dt>Pressão (altímetro)</dt><dd id="ro-real-p">—</dd></div>
+            </dl>
+            <p class="status" id="st-real"></p>
+          </div>
+          <div class="card summary" id="summary"></div>
+        </aside>
+      </div>
+
+      <div class="charts-grid">
+        <div class="card chart-card">
+          <h3>Velocidade × tempo <span class="eqi">v(t) = y′(t)</span></h3>
+          <div class="chart-box"><canvas id="ch-sim-v"></canvas></div>
+        </div>
+        <div class="card chart-card">
+          <h3>Altitude × tempo <span class="eqi">y(t) = ∫ v(t) dt</span></h3>
+          <div class="chart-box"><canvas id="ch-sim-y"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= RÉGUA 1 ======================= -->
+    <section class="tabpanel" id="tab-r1" role="tabpanel" aria-labelledby="tabbtn-r1" hidden>
+      <div class="regua-grid">
+        <div class="card theory">
+          <span class="badge">Régua 1</span>
+          <h2>Queda livre sem resistência do ar</h2>
+          <p class="lead">A única força é o peso, então a aceleração é <b>constante</b>. Integrando duas vezes, chegamos à posição.</p>
+          <ol class="steps">
+            <li>
+              <span class="step-tag">Ponto de partida</span>
+              <div class="eq">a(t) = −g = −<span class="pv" data-k="g"></span> m/s²</div>
+            </li>
+            <li>
+              <span class="step-tag int">Integrar a aceleração</span>
+              <div class="eq">v(t) = ∫ a(t) dt = −g·t + C<sub>1</sub></div>
+              <p class="note">Parte do repouso: v(0) = 0 ⇒ C<sub>1</sub> = 0 ⇒ <b>v(t) = −g·t</b></p>
+            </li>
+            <li>
+              <span class="step-tag int">Integrar a velocidade</span>
+              <div class="eq">y(t) = ∫ v(t) dt = −½·g·t² + C<sub>2</sub></div>
+              <p class="note">Sai do avião: y(0) = <span class="pv" data-k="h0"></span> m ⇒ <b>y(t) = <span class="pv" data-k="h0"></span> − ½·g·t²</b></p>
+            </li>
+            <li>
+              <span class="step-tag der">Conferindo com a derivada</span>
+              <div class="eq">y′(t) = −g·t = v(t) &nbsp;·&nbsp; v′(t) = −g = a(t) ✓</div>
+            </li>
+          </ol>
+          <p class="note">O sinal negativo indica movimento <b>para baixo</b>. Nos mostradores usamos o módulo |v|.</p>
+        </div>
+
+        <div class="card live">
+          <div class="slider-head">
+            <label for="r1-t">Arraste a régua do tempo</label>
+            <output id="r1-t-out" for="r1-t"></output>
+          </div>
+          <input type="range" id="r1-t" min="0" max="28" step="0.1" value="5">
+          <div class="calc" id="r1-calc"></div>
+          <div class="result-box danger" id="r1-impact"></div>
+        </div>
+
+        <div class="card ruler-card"><div class="ruler" id="r1-ruler"></div></div>
+
+        <div class="card chart-card wide">
+          <h3>Posição e velocidade sem resistência do ar</h3>
+          <div class="chart-pair">
+            <div class="chart-box"><canvas id="ch-r1-y"></canvas></div>
+            <div class="chart-box"><canvas id="ch-r1-v"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= RÉGUA 2 ======================= -->
+    <section class="tabpanel" id="tab-r2" role="tabpanel" aria-labelledby="tabbtn-r2" hidden>
+      <div class="regua-grid">
+        <div class="card theory">
+          <span class="badge">Régua 2</span>
+          <h2>Altímetro barométrico</h2>
+          <p class="lead">O altímetro <b>não mede altura</b>: mede a <b>pressão do ar</b> e converte em altitude usando uma função exponencial.</p>
+          <ol class="steps">
+            <li>
+              <span class="step-tag der">Pressão diminui com a altura</span>
+              <div class="eq">dP/dh = −ρ·g</div>
+            </li>
+            <li>
+              <span class="step-tag">Ar como gás ideal</span>
+              <div class="eq">ρ = P·M / (R·T) &nbsp;⇒&nbsp; dP/dh = −P / H</div>
+              <p class="note">H = R·T / (M·g) ≈ <b><span class="pv" data-k="H"></span> m</b> (escala de altura)</p>
+            </li>
+            <li>
+              <span class="step-tag int">Separar variáveis e integrar</span>
+              <div class="eq">∫ dP/P = −∫ dh/H &nbsp;⇒&nbsp; ln P = −h/H + C</div>
+            </li>
+            <li>
+              <span class="step-tag">Função exponencial</span>
+              <div class="eq big">P(h) = P<sub>0</sub>·e<sup>−h/H</sup></div>
+              <p class="note">P<sub>0</sub> = 1013,25 hPa (nível do mar)</p>
+            </li>
+            <li>
+              <span class="step-tag">O que o altímetro calcula (função inversa)</span>
+              <div class="eq">h = −H·ln(P / P<sub>0</sub>)</div>
+            </li>
+          </ol>
+        </div>
+
+        <div class="card live">
+          <div class="slider-head">
+            <label for="r2-h">Arraste a régua da altitude</label>
+            <output id="r2-h-out" for="r2-h"></output>
+          </div>
+          <input type="range" id="r2-h" min="0" max="10000" step="10" value="4000">
+          <div class="altimeter" aria-hidden="true">
+            <div class="alt-screen">
+              <span class="alt-label">ALT</span>
+              <span class="alt-value" id="r2-display">0</span>
+              <span class="alt-unit">m</span>
+            </div>
+            <div class="alt-sub" id="r2-display-p"></div>
+          </div>
+          <div class="calc" id="r2-calc"></div>
+          <div class="result-box info" id="r2-chain"></div>
+        </div>
+
+        <div class="card ruler-card"><div class="ruler" id="r2-ruler"></div></div>
+
+        <div class="card chart-card wide">
+          <h3>Pressão atmosférica × altitude <span class="eqi">P(h) = P₀·e^(−h/H)</span></h3>
+          <div class="chart-box tall"><canvas id="ch-r2"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= RÉGUA 3 ======================= -->
+    <section class="tabpanel" id="tab-r3" role="tabpanel" aria-labelledby="tabbtn-r3" hidden>
+      <div class="regua-grid">
+        <div class="card theory">
+          <span class="badge">Régua 3</span>
+          <h2>Resistência do ar e velocidade terminal</h2>
+          <p class="lead">O ar empurra para cima com força que cresce com v². Pela 2ª lei de Newton:</p>
+          <ol class="steps">
+            <li>
+              <span class="step-tag">Forças</span>
+              <div class="eq">m·dv/dt = m·g − k·v² , &nbsp; k = ½·ρ·C<sub>d</sub>·A</div>
+            </li>
+            <li>
+              <span class="step-tag der">Velocidade terminal (dv/dt = 0)</span>
+              <div class="eq">v<sub>t</sub> = √( 2·m·g / (ρ·C<sub>d</sub>·A) )</div>
+            </li>
+            <li>
+              <span class="step-tag int">Resolvendo a equação diferencial</span>
+              <div class="eq">v(t) = v<sub>t</sub>·tanh( g·t / v<sub>t</sub> )</div>
+              <div class="eq">s(t) = (v<sub>t</sub>²/g)·ln cosh( g·t / v<sub>t</sub> )</div>
+            </li>
+            <li>
+              <span class="step-tag lim">Limite</span>
+              <div class="eq">lim<sub>t→∞</sub> v(t) = v<sub>t</sub>·lim<sub>t→∞</sub> tanh(…) = v<sub>t</sub>·1 = v<sub>t</sub></div>
+            </li>
+            <li>
+              <span class="step-tag">99% de v<sub>t</sub></span>
+              <div class="eq">tanh(g·t/v<sub>t</sub>) = 0,99 ⇒ t = (v<sub>t</sub>/g)·atanh(0,99)</div>
+            </li>
+          </ol>
+        </div>
+
+        <div class="card live">
+          <div class="slider-head">
+            <label for="r3-t">Arraste a régua do tempo</label>
+            <output id="r3-t-out" for="r3-t"></output>
+          </div>
+          <input type="range" id="r3-t" min="0" max="40" step="0.05" value="12.25">
+          <div class="progress" aria-hidden="true"><div class="progress-fill" id="r3-progress"></div><span id="r3-progress-txt"></span></div>
+          <div class="calc" id="r3-calc"></div>
+          <div class="result-box ok" id="r3-results"></div>
+        </div>
+
+        <div class="card ruler-card"><div class="ruler" id="r3-ruler"></div></div>
+
+        <div class="card chart-card wide">
+          <h3>Gráfico comparativo: com e sem resistência do ar</h3>
+          <div class="chart-box tall"><canvas id="ch-r3"></canvas></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Atalhos: <kbd>Espaço</kbd> saltar/pausar · <kbd>R</kbd> reiniciar · <kbd>1</kbd>–<kbd>4</kbd> trocar de aba · <kbd>F</kbd> tela cheia</span>
+    <span>Modelo: arrasto quadrático, integração RK4 (Δt = 0,01 s), atmosfera isotérmica.</span>
+  </footer>
+
+  <script src="js/physics.js"></script>
+  <script src="js/chart.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
