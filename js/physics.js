@@ -30,11 +30,12 @@
     rho: 1.225,       // densidade do ar ao nível do mar (kg/m³)
     cd: 1.0,          // coeficiente de arrasto do corpo
     area: 0.70,       // área frontal do corpo (m²)
-    parachute: true,  // abrir paraquedas?
-    deployAlt: 1200,  // altitude de abertura (m)
+    deployMode: 'manual', // 'manual' (botão) | 'auto' (na altitude) | 'never'
+    deployTime: null, // instante em que o botão foi apertado (modo manual)
+    deployAlt: 1200,  // altitude de abertura no modo automático (m)
+    aad: true,        // dispositivo de segurança: abre sozinho a 225 m se ainda estiver rápido
     canopyArea: 30,   // área do velame (m²)
     canopyCd: 1.5,    // coeficiente de arrasto do velame
-    inflateTime: 3,   // tempo de inflagem do velame (s)
     varyDensity: false // densidade do ar varia com a altitude?
   });
 
@@ -98,25 +99,51 @@
     return (vt / p.g) * acoshExp(L);
   }
 
+  // ---------- Abertura do paraquedas em fases (como na vida real) ----------
+  // 0 → 0,6 s : extrator (pilot chute) sai e puxa o saco do velame
+  // 0,6 → 1,4 s: linhas esticam, o corpo gira de "deitado" para "em pé"
+  // 1,4 → 3,5 s: o velame enche (área cresce ~ quadraticamente)
+  const PHASE = Object.freeze({ pilot: 0.6, stretch: 1.4, full: 3.5 });
+  const PILOT_CDA = 0.6;        // arrasto extra do extrator + saco (m²)
+  const AAD_ALT = 225, AAD_SPEED = 35; // dispositivo de segurança (ex.: CYPRES)
+
+  function deployFraction(tau) {
+    if (!(tau >= 0)) return { pilot: 0, stretch: 0, fill: 0 };
+    const pilot = Math.min(1, tau / PHASE.pilot);
+    const stretch = Math.min(1, Math.max(0, (tau - PHASE.pilot) / (PHASE.stretch - PHASE.pilot)));
+    const u = Math.min(1, Math.max(0, (tau - PHASE.stretch) / (PHASE.full - PHASE.stretch)));
+    return { pilot, stretch, fill: u * u * (3 - 2 * u) }; // suave no começo e no fim
+  }
+
+  function deployModeOf(p) {
+    if (p.parachute === false) return 'never'; // compatibilidade
+    return p.deployMode || 'auto';
+  }
+
   // ---------- Simulação completa (RK4) ----------
-  // Inclui: arrasto do corpo, abertura e inflagem do paraquedas, densidade variável (opcional).
+  // Inclui: arrasto do corpo, abertura em fases (automática, manual ou pelo AAD),
+  // e densidade variável com a altitude (opcional).
   function simulate(p) {
     const dt = 0.01;          // passo de integração (s)
     const rec = 5;            // grava 1 amostra a cada 5 passos (0,05 s)
     const maxT = 3600;
     const H = scaleHeight(p.g);
+    const mode = deployModeOf(p);
     const cdaBody = p.cd * p.area;
-    const cdaCanopy = Math.max(cdaBody, p.canopyCd * p.canopyArea);
-    const inflate = Math.max(0.1, p.inflateTime);
+    const cdaCanopy = Math.max(cdaBody + PILOT_CDA, p.canopyCd * p.canopyArea);
 
     let tDeploy = null;
     let deploy = null;
-    if (p.parachute && p.deployAlt >= p.h0) { tDeploy = 0; deploy = { t: 0, y: p.h0, v: 0 }; }
+    if (mode === 'auto' && p.deployAlt >= p.h0) { tDeploy = 0; deploy = { t: 0, y: p.h0, v: 0, by: 'auto' }; }
+    if (mode === 'manual' && p.deployTime !== null && p.deployTime !== undefined && p.deployTime <= 0) {
+      tDeploy = 0; deploy = { t: 0, y: p.h0, v: 0, by: 'manual' };
+    }
 
     function cdaAt(t) {
       if (tDeploy === null || t < tDeploy) return cdaBody;
-      const f = Math.min(1, (t - tDeploy) / inflate);
-      return cdaBody + f * (cdaCanopy - cdaBody);
+      const f = deployFraction(t - tDeploy);
+      const pilot = PILOT_CDA * f.pilot;
+      return cdaBody + pilot + f.fill * (cdaCanopy - cdaBody - pilot);
     }
     function acc(t, s, v) {
       const y = Math.max(0, p.h0 - s);
@@ -131,6 +158,8 @@
     let t99 = null;
     const vtBody = terminalVelocity(p);
 
+    function push(tt, ss, vv) { T.push(tt); Y.push(Math.max(0, p.h0 - ss)); V.push(vv); A.push(acc(tt, ss, vv)); C.push(cdaAt(tt)); }
+
     const steps = Math.ceil(maxT / dt);
     for (let i = 1; i <= steps; i++) {
       const k1v = acc(t, s, v), k1s = v;
@@ -142,11 +171,17 @@
       const tNew = t + dt;
       const yOld = p.h0 - s, yNew = p.h0 - sNew;
 
-      // evento: abertura do paraquedas (interpola o instante exato de cruzar a altitude)
-      if (p.parachute && tDeploy === null && yNew <= p.deployAlt && yNew > 0) {
-        const f = (yOld - p.deployAlt) / (yOld - yNew);
-        tDeploy = t + f * dt;
-        deploy = { t: tDeploy, y: p.deployAlt, v: v + f * (vNew - v) };
+      // eventos de abertura (interpola o instante exato dentro do passo)
+      if (tDeploy === null && yNew > 0 && mode !== 'never') {
+        let f = null, by = null;
+        if (mode === 'auto' && yNew <= p.deployAlt) { f = (yOld - p.deployAlt) / (yOld - yNew); by = 'auto'; }
+        else if (mode === 'manual' && p.deployTime !== null && p.deployTime !== undefined && tNew >= p.deployTime) { f = (p.deployTime - t) / dt; by = 'manual'; }
+        if (f === null && p.aad && yNew <= AAD_ALT && vNew > AAD_SPEED) { f = Math.max(0, (yOld - AAD_ALT) / (yOld - yNew)); by = 'aad'; }
+        if (f !== null) {
+          f = Math.min(1, Math.max(0, f));
+          tDeploy = t + f * dt;
+          deploy = { t: tDeploy, y: yOld + f * (yNew - yOld), v: v + f * (vNew - v), by };
+        }
       }
       // evento: 99% da velocidade terminal do corpo (antes de abrir)
       if (t99 === null && tDeploy === null && vNew >= 0.99 * vtBody) {
@@ -157,7 +192,7 @@
       if (yNew <= 0) {
         const f = yOld / (yOld - yNew);
         const tL = t + f * dt, vL = v + f * (vNew - v);
-        T.push(tL); Y.push(0); V.push(vL); A.push(acc(tL, p.h0, vL)); C.push(cdaAt(tL));
+        push(tL, p.h0, vL);
         landing = { t: tL, v: vL };
         maxV = Math.max(maxV, vL);
         break;
@@ -167,16 +202,16 @@
       maxV = Math.max(maxV, v);
       const aNow = acc(t, s, v);
       maxDecel = Math.max(maxDecel, -aNow);
-      if (i % rec === 0) { T.push(t); Y.push(p.h0 - s); V.push(v); A.push(aNow); C.push(cdaAt(t)); }
+      if (i % rec === 0) push(t, s, v);
     }
-    if (!landing) { T.push(t); Y.push(p.h0 - s); V.push(v); A.push(acc(t, s, v)); C.push(cdaAt(t)); }
+    if (!landing) push(t, s, v);
 
     return {
       T, Y, V, A, C,
       tEnd: T[T.length - 1],
       deploy, landing, t99,
       maxV, maxDecel,
-      cdaBody, cdaCanopy, inflate,
+      cdaBody, cdaCanopy, inflate: PHASE.full,
       vtBody,
       vtCanopy: terminalVelocity(p, cdaCanopy)
     };
@@ -221,6 +256,7 @@
     scaleHeight, pressureAt, altitudeFromPressure, densityAt, pressureRate,
     vacuumAt, vacuumImpact,
     dragK, terminalVelocity, dragAt, timeToFraction, dragGroundTime,
-    simulate, vacuumTrajectory, sampleAt
+    simulate, vacuumTrajectory, sampleAt,
+    deployFraction, PHASE, AAD_ALT, AAD_SPEED
   };
 });

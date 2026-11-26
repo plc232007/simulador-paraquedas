@@ -39,7 +39,7 @@
     constructor(canvas, opts) {
       this.c = canvas;
       this.ctx = canvas.getContext('2d');
-      this.o = Object.assign({ xLabel: '', yLabel: '', xUnit: '', yUnit: '', yMin: null, yMax: null, xMin: null, xMax: null, legend: true }, opts || {});
+      this.o = Object.assign({ reveal: false, xLabel: '', yLabel: '', xUnit: '', yUnit: '', yMin: null, yMax: null, xMin: null, xMax: null, legend: true }, opts || {});
       this.data = { series: [], hLines: [], vLines: [] };
       this.marker = null;
       this.w = 0; this.h = 0;
@@ -155,8 +155,9 @@
           ctx.font = '600 ' + font; ctx.fillText(l.label, m.l + pw - 6, py - 3); ctx.font = font;
         }
       }
+      const lim = this.o.reveal && this.marker !== null ? this.marker : Infinity;
       for (const l of this.data.vLines) {
-        if (l.x < B.xMin || l.x > B.xMax) continue;
+        if (l.x < B.xMin || l.x > B.xMax || l.x > lim) continue;
         const px = X(l.x);
         ctx.strokeStyle = l.color || muted; ctx.setLineDash([3, 4]); ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(px, m.t); ctx.lineTo(px, m.t + ph); ctx.stroke();
@@ -183,8 +184,9 @@
         ctx.setLineDash(s.dash || []);
         ctx.beginPath();
         ctx.moveTo(X(s.x[0]), Y(s.y[0]));
-        for (let i = stride; i < n; i += stride) ctx.lineTo(X(s.x[i]), Y(s.y[i]));
-        ctx.lineTo(X(s.x[n - 1]), Y(s.y[n - 1]));
+        for (let i = stride; i < n; i += stride) { if (s.x[i] > lim) break; ctx.lineTo(X(s.x[i]), Y(s.y[i])); }
+        if (s.x[n - 1] <= lim) ctx.lineTo(X(s.x[n - 1]), Y(s.y[n - 1]));
+        else { const v = valueAt(s, lim); if (v !== null) ctx.lineTo(X(lim), Y(v)); }
         ctx.stroke();
         ctx.setLineDash([]);
       }

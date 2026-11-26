@@ -66,15 +66,20 @@
 
           <fieldset>
             <legend>Paraquedas</legend>
-            <label class="check"><input type="checkbox" id="in-parachute" data-key="parachute"> Abrir o paraquedas</label>
-            <div class="field" data-needs="parachute">
+            <div class="seg" role="radiogroup" aria-label="Como abrir o paraquedas">
+              <label><input type="radio" name="deployMode" value="manual"><span>Eu abro</span></label>
+              <label><input type="radio" name="deployMode" value="auto"><span>Automático</span></label>
+              <label><input type="radio" name="deployMode" value="never"><span>Não abrir</span></label>
+            </div>
+            <div class="field" data-needs="auto">
               <label for="in-deployAlt">Altitude de abertura</label>
               <div class="range-row"><input type="range" id="in-deployAlt" data-key="deployAlt" min="400" max="3800" step="50"><output for="in-deployAlt" id="out-deployAlt"></output></div>
             </div>
-            <div class="field" data-needs="parachute">
+            <div class="field" data-needs="chute">
               <label for="in-canopyArea">Área do velame</label>
               <div class="range-row"><input type="range" id="in-canopyArea" data-key="canopyArea" min="10" max="60" step="1"><output for="in-canopyArea" id="out-canopyArea"></output></div>
             </div>
+            <label class="check" data-needs="chute"><input type="checkbox" id="in-aad" data-key="aad"> Dispositivo de segurança (AAD) <span class="hint">abre sozinho a 225 m</span></label>
           </fieldset>
 
           <fieldset>
@@ -88,13 +93,20 @@
           <div class="transport">
             <button class="btn primary" id="btn-play" aria-keyshortcuts="Space">▶ Saltar</button>
             <button class="btn" id="btn-reset" aria-keyshortcuts="R">↺ Reiniciar</button>
+            <button class="btn open" id="btn-open" aria-keyshortcuts="P" disabled>🪂 Abrir paraquedas (P)</button>
             <label class="speed">Ritmo
               <select id="sel-speed">
                 <option value="1">1×</option>
                 <option value="2">2×</option>
-                <option value="5" selected>5×</option>
+                <option value="5">5×</option>
                 <option value="10">10×</option>
                 <option value="20">20×</option>
+              </select>
+            </label>
+            <label class="speed">Câmera
+              <select id="sel-cam">
+                <option value="follow">Seguir</option>
+                <option value="overview">Visão geral</option>
               </select>
             </label>
             <input type="range" id="scrub" min="0" max="100" step="any" value="0" aria-label="Linha do tempo">
@@ -304,12 +316,13 @@
   </main>
 
   <footer class="foot">
-    <span>Atalhos: <kbd>Espaço</kbd> saltar/pausar · <kbd>R</kbd> reiniciar · <kbd>1</kbd>–<kbd>4</kbd> trocar de aba · <kbd>F</kbd> tela cheia</span>
+    <span>Atalhos: <kbd>Espaço</kbd> saltar/pausar · <kbd>P</kbd> abrir paraquedas · <kbd>C</kbd> câmera · <kbd>R</kbd> reiniciar · <kbd>1</kbd>–<kbd>4</kbd> trocar de aba · <kbd>F</kbd> tela cheia</span>
     <span>Modelo: arrasto quadrático, integração RK4 (Δt = 0,01 s), atmosfera isotérmica.</span>
   </footer>
 
   <script src="js/physics.js"></script>
   <script src="js/chart.js"></script>
+  <script src="js/scene.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

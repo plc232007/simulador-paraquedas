@@ -36,7 +36,8 @@
   const state = {
     p: Object.assign({}, P.DEFAULTS),
     sim: null, vac: null, tEnd: 1,
-    t: 0, playing: false, speed: 5, last: 0, raf: 0
+    t: 0, playing: false, speed: 2, last: 0, raf: 0,
+    camera: 'follow', summaryHtml: ''
   };
 
   // ---------------- Controles ----------------
@@ -48,7 +49,7 @@
     deployAlt: { unit: ' m', d: 0 },
     canopyArea: { unit: ' m²', d: 0 }
   };
-  const CHECKS = ['parachute', 'varyDensity'];
+  const CHECKS = ['aad', 'varyDensity'];
 
   function clampDeploy() {
     const inp = $('in-deployAlt');
@@ -64,10 +65,13 @@
       $('out-' + k).textContent = fmt(state.p[k], RANGES[k].d) + RANGES[k].unit;
     }
     for (const k of CHECKS) $('in-' + k).checked = !!state.p[k];
-    document.querySelectorAll('[data-needs="parachute"]').forEach((el) => {
-      el.classList.toggle('disabled', !state.p.parachute);
-      el.querySelectorAll('input').forEach((i) => { i.disabled = !state.p.parachute; });
+    document.querySelectorAll('input[name="deployMode"]').forEach((r) => { r.checked = r.value === state.p.deployMode; });
+    const mode = state.p.deployMode;
+    document.querySelectorAll('[data-needs]').forEach((el) => {
+      const ok = el.dataset.needs === 'auto' ? mode === 'auto' : mode !== 'never';
+      el.hidden = !ok;
     });
+    $('btn-open').hidden = mode !== 'manual';
   }
   function bindControls() {
     for (const k in RANGES) {
@@ -86,6 +90,17 @@
         recompute();
       });
     }
+    document.querySelectorAll('input[name="deployMode"]').forEach((r) => {
+      r.addEventListener('change', () => {
+        if (!r.checked) return;
+        state.p.deployMode = r.value;
+        state.p.deployTime = null;
+        syncControls();
+        recompute();
+      });
+    });
+    $('btn-open').addEventListener('click', openChute);
+    $('sel-cam').addEventListener('change', (e) => { state.camera = e.target.value; renderFrame(); });
     $('btn-defaults').addEventListener('click', () => {
       state.p = Object.assign({}, P.DEFAULTS);
       syncControls();
@@ -109,7 +124,7 @@
     const p = state.p;
     state.sim = P.simulate(p);
     state.vac = P.vacuumTrajectory(p);
-    state.tEnd = Math.max(state.sim.tEnd, state.vac.tEnd);
+    state.tEnd = Math.max(state.sim.tEnd + 3, state.vac.tEnd + 3); // +3 s para ver o pouso
     $('scrub').max = String(state.tEnd);
     if (state.t > state.tEnd) state.t = state.tEnd;
 
@@ -120,16 +135,20 @@
       else if (k === 'H') el.textContent = fmt(P.scaleHeight(p.g), 0);
     });
 
+    state.summaryHtml = '';
     updateSimCharts();
-    updateSummary();
     setupReguas();
     renderFrame();
   }
 
   // ---------------- Reprodução ----------------
   function togglePlay() { state.playing ? pause() : play(); }
+  function newJump() {
+    state.t = 0;
+    if (state.p.deployTime !== null) { state.p.deployTime = null; recompute(); }
+  }
   function play() {
-    if (state.t >= state.tEnd - 1e-9) state.t = 0;
+    if (state.t >= state.tEnd - 1e-9) newJump();
     state.playing = true;
     state.last = performance.now();
     if (state.raf) cancelAnimationFrame(state.raf);
@@ -142,7 +161,20 @@
     state.raf = 0;
     updatePlayBtn();
   }
-  function reset() { pause(); state.t = 0; renderFrame(); }
+  function reset() { pause(); newJump(); renderFrame(); }
+
+  // Botão "Abrir paraquedas": registra o instante e recalcula a trajetória a partir dele
+  function canOpenNow() {
+    const sim = state.sim, t = state.t;
+    if (state.p.deployMode !== 'manual' || t <= 0) return false;
+    if (t >= sim.tEnd - 1e-6) return false;
+    return !(sim.deploy && sim.deploy.t <= t + 1e-9);
+  }
+  function openChute() {
+    if (!canOpenNow()) return;
+    state.p.deployTime = state.t;
+    recompute();
+  }
   function tick(ts) {
     state.raf = 0;
     if (!state.playing) return;
@@ -167,6 +199,8 @@
     const t = state.t;
     drawSky();
     updateReadouts();
+    updateSummary();
+    updateOpenBtn();
     charts.simV.setMarker(t);
     charts.simY.setMarker(t);
     $('clock').textContent = 't = ' + fmt(t, 1) + ' s';
@@ -176,8 +210,23 @@
   }
 
   function setStatus(el, cls, html) {
-    el.className = 'status' + (cls ? ' ' + cls : '');
-    el.innerHTML = html;
+    const c = 'status' + (cls ? ' ' + cls : '');
+    if (el.className !== c) el.className = c;
+    if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  }
+  function updateOpenBtn() {
+    const b = $('btn-open');
+    if (b.hidden) return;
+    const dep = state.sim.deploy;
+    const can = canOpenNow();
+    b.disabled = !can;
+    let txt;
+    if (dep && dep.t <= state.t + 1e-9) txt = dep.by === 'aad' ? '🪂 AAD abriu aos ' + fmt(dep.y, 0) + ' m' : '🪂 Aberto aos ' + fmt(dep.y, 0) + ' m';
+    else if (state.t <= 0) txt = '🪂 Abrir paraquedas (P)';
+    else txt = '🪂 ABRIR PARAQUEDAS (P)';
+    if (b.textContent !== txt) b.textContent = txt;
+    const urgent = can && P.sampleAt(state.sim, state.t).y < 1000;
+    b.classList.toggle('urgent', urgent);
   }
 
   function updateReadouts() {
@@ -197,8 +246,9 @@
     // --- com resistência ---
     const sr = P.sampleAt(sim, t);
     const landed = t >= sim.tEnd - 1e-6;
+    const vLand = sim.landing ? sim.landing.v : sr.v;
     $('ro-real-y').innerHTML = fmt(sr.y, 0) + ' m';
-    $('ro-real-v').innerHTML = fmt(sr.v, 1) + ' m/s<small>' + kmh(sr.v) + '</small>';
+    $('ro-real-v').innerHTML = landed ? '0,0 m/s<small>tocou o solo a ' + fmt(vLand, 1) + ' m/s</small>' : fmt(sr.v, 1) + ' m/s<small>' + kmh(sr.v) + '</small>';
     if (landed) $('ro-real-a').innerHTML = '—';
     else {
       const a = sr.a;
@@ -210,15 +260,26 @@
 
     const st = $('st-real');
     const dep = sim.deploy;
-    if (t === 0) setStatus(st, '', 'Pronto para saltar.');
-    else if (landed) {
-      const v = sim.landing ? sim.landing.v : sr.v;
-      if (v <= 7) setStatus(st, 'ok', '✓ Pouso seguro a ' + fmt(v, 1) + ' m/s (' + kmh(v) + ') em ' + fmt(sim.tEnd, 1) + ' s.');
-      else if (v <= 12) setStatus(st, 'warn', 'Pouso duro a ' + fmt(v, 1) + ' m/s (' + kmh(v) + '). Velame pequeno demais.');
-      else setStatus(st, 'danger', '💥 Impacto a ' + fmt(v, 1) + ' m/s (' + kmh(v) + '). ' + (p.parachute ? '' : 'O paraquedas não foi aberto!'));
-    } else if (dep && t >= dep.t) {
-      if (t < dep.t + sim.inflate) setStatus(st, 'warn', 'Velame inflando: o arrasto cresce e o paraquedista freia.');
-      else setStatus(st, 'ok', 'Paraquedas aberto: nova velocidade terminal ≈ ' + fmt(sim.vtCanopy, 1) + ' m/s.');
+    const opened = dep && t >= dep.t;
+    const byAAD = dep && dep.by === 'aad';
+    if (t === 0) {
+      setStatus(st, '', p.deployMode === 'manual' ? 'Pronto. Durante a queda, abra o paraquedas com o botão 🪂 ou a tecla <b>P</b>.' : 'Pronto para saltar.');
+    } else if (landed) {
+      const pre = byAAD ? 'Salvo pelo AAD! ' : '';
+      if (vLand <= 7) setStatus(st, 'ok', '✓ ' + pre + 'Pouso seguro a ' + fmt(vLand, 1) + ' m/s (' + kmh(vLand) + ') em ' + fmt(sim.landing.t, 1) + ' s.');
+      else if (vLand <= 12) setStatus(st, 'warn', pre + 'Pouso duro a ' + fmt(vLand, 1) + ' m/s (' + kmh(vLand) + '). ' + (byAAD ? 'Abriu baixo demais.' : 'Velame pequeno demais.'));
+      else setStatus(st, 'danger', '💥 Impacto a ' + fmt(vLand, 1) + ' m/s (' + kmh(vLand) + '). O paraquedas não foi aberto!');
+    } else if (opened) {
+      const tau = t - dep.t, PH = P.PHASE;
+      const pre = byAAD ? '<b>AAD disparou a ' + fmt(dep.y, 0) + ' m!</b> ' : '';
+      if (tau < PH.pilot) setStatus(st, 'warn', pre + 'Extrator lançado: ele puxa o velame para fora da mochila.');
+      else if (tau < PH.stretch) setStatus(st, 'warn', pre + 'Linhas esticando: o corpo gira e fica em pé.');
+      else if (tau < PH.full) setStatus(st, 'warn', pre + 'Velame inflando: a área cresce, o arrasto (∝ A·v²) dispara e o paraquedista freia.');
+      else setStatus(st, 'ok', 'Paraquedas aberto: nova velocidade terminal ≈ ' + fmt(sim.vtCanopy, 1) + ' m/s (' + kmh(sim.vtCanopy) + ').');
+    } else if (p.deployMode === 'manual' && sr.y < 900) {
+      setStatus(st, 'danger', '⚠ ABRA O PARAQUEDAS! Abaixo de 900 m.' + (p.aad ? ' O AAD dispara sozinho a ' + P.AAD_ALT + ' m.' : ' Sem AAD!'));
+    } else if (p.deployMode === 'manual' && sr.y < 1500) {
+      setStatus(st, 'warn', 'Altitude de abertura: abra entre 1.500 e 900 m (botão 🪂 ou tecla <b>P</b>).');
     } else if (sr.a < 0.02 * p.g) {
       setStatus(st, 'info', 'Velocidade terminal: peso = arrasto, logo a aceleração ≈ 0.');
     } else {
@@ -226,23 +287,26 @@
     }
   }
 
+  // Resumo mostra só o que JÁ aconteceu (não entrega o final antes da hora)
   function updateSummary() {
-    const p = state.p, sim = state.sim, vac = state.vac;
+    const p = state.p, sim = state.sim, vac = state.vac, t = state.t;
     const items = [];
-    items.push('Velocidade terminal: <b>' + fmt(sim.vtBody, 2) + ' m/s</b> (' + kmh(sim.vtBody) + ')');
-    if (sim.t99) items.push('99% de v<sub>t</sub> em <b>' + fmt(sim.t99.t, 2) + ' s</b>, a ' + fmt(sim.t99.y, 0) + ' m');
-    if (sim.deploy) items.push('Paraquedas abre em <b>' + fmt(sim.deploy.t, 1) + ' s</b>, a ' + fmt(sim.deploy.y, 0) + ' m');
-    if (sim.deploy) items.push('Desaceleração máxima: <b>' + fmt(sim.maxDecel / p.g, 1) + ' g</b>');
-    if (sim.landing) items.push('Solo em <b>' + fmt(sim.landing.t, 1) + ' s</b> a <b>' + fmt(sim.landing.v, 1) + ' m/s</b>');
-    items.push('Sem ar: solo em <b>' + fmt(vac.tEnd, 1) + ' s</b> a <b>' + fmt(vac.landing.v, 0) + ' m/s</b>');
-    $('summary').innerHTML = '<h3>Resumo do salto</h3><ul><li>' + items.join('</li><li>') + '</li></ul>';
+    const by = { manual: 'pelo botão', auto: 'automático', aad: 'pelo AAD' };
+    items.push('Velocidade terminal (teoria): <b>' + fmt(sim.vtBody, 2) + ' m/s</b> (' + kmh(sim.vtBody) + ')');
+    if (sim.t99 && t >= sim.t99.t) items.push('99% de v<sub>t</sub> em <b>' + fmt(sim.t99.t, 2) + ' s</b>, a ' + fmt(sim.t99.y, 0) + ' m');
+    if (t >= vac.tEnd) items.push('Sem ar: solo em <b>' + fmt(vac.tEnd, 1) + ' s</b> a <b>' + fmt(vac.landing.v, 0) + ' m/s</b>');
+    if (sim.deploy && t >= sim.deploy.t) items.push('Paraquedas aberto ' + by[sim.deploy.by] + ' em <b>' + fmt(sim.deploy.t, 1) + ' s</b>, a ' + fmt(sim.deploy.y, 0) + ' m');
+    if (sim.deploy && t >= sim.deploy.t + P.PHASE.full) items.push('Desaceleração máxima na abertura: <b>' + fmt(sim.maxDecel / p.g, 1) + ' g</b>');
+    if (sim.landing && t >= sim.landing.t) items.push('Solo em <b>' + fmt(sim.landing.t, 1) + ' s</b> a <b>' + fmt(sim.landing.v, 1) + ' m/s</b>');
+    const html = '<h3>Resumo do salto</h3><ul><li>' + items.join('</li><li>') + '</li></ul>';
+    if (html !== state.summaryHtml) { $('summary').innerHTML = html; state.summaryHtml = html; }
   }
 
   // ---------------- Gráficos ----------------
   const charts = {};
   function initCharts() {
-    charts.simV = new LineChart($('ch-sim-v'), { xLabel: 'tempo (s)', yLabel: 'velocidade (m/s)', yMin: 0, xMin: 0 });
-    charts.simY = new LineChart($('ch-sim-y'), { xLabel: 'tempo (s)', yLabel: 'altitude (m)', yMin: 0, xMin: 0 });
+    charts.simV = new LineChart($('ch-sim-v'), { xLabel: 'tempo (s)', yLabel: 'velocidade (m/s)', yMin: 0, xMin: 0, reveal: true });
+    charts.simY = new LineChart($('ch-sim-y'), { xLabel: 'tempo (s)', yLabel: 'altitude (m)', yMin: 0, xMin: 0, reveal: true });
     charts.r1y = new LineChart($('ch-r1-y'), { xLabel: 'tempo (s)', yLabel: 'altitude y(t) (m)', yMin: 0, xMin: 0, legend: false });
     charts.r1v = new LineChart($('ch-r1-v'), { xLabel: 'tempo (s)', yLabel: 'velocidade |v(t)| (m/s)', yMin: 0, xMin: 0, legend: false });
     charts.r2 = new LineChart($('ch-r2'), { xLabel: 'altitude (m)', yLabel: 'pressão (hPa)', xMin: 0, legend: false });
@@ -266,7 +330,7 @@
         { x: vac.T, y: vac.Y, color: COLOR.vac, label: 'Sem resistência do ar', dash: [7, 5] },
         { x: sim.T, y: sim.Y, color: COLOR.real, label: 'Com resistência do ar' }
       ],
-      hLines: p.parachute ? [{ y: p.deployAlt, label: 'abertura · ' + fmt(p.deployAlt, 0) + ' m', color: COLOR.orange }] : [],
+      hLines: p.deployMode === 'auto' ? [{ y: p.deployAlt, label: 'abertura · ' + fmt(p.deployAlt, 0) + ' m', color: COLOR.orange }] : [],
       vLines
     });
   }
@@ -333,7 +397,7 @@
     const hs = [], ps = [];
     for (let i = 0; i <= 250; i++) { const h = (H_MAX * i) / 250; hs.push(h); ps.push(P.pressureAt(h, p.g) / 100); }
     const r2v = [{ x: p.h0, label: 'saída do avião', color: COLOR.real }];
-    if (p.parachute) r2v.push({ x: p.deployAlt, label: 'abertura', color: COLOR.orange });
+    if (p.deployMode === 'auto') r2v.push({ x: p.deployAlt, label: 'abertura', color: COLOR.orange });
     charts.r2.setData({ xMax: H_MAX, yMin: 0, series: [{ x: hs, y: ps, color: COLOR.real }], hLines: [], vLines: r2v });
     renderR2();
 
@@ -440,15 +504,11 @@
     $('r3-t').addEventListener('input', renderR3);
   }
 
-  // ---------------- Céu animado (canvas) ----------------
-  const sky = { c: null, ctx: null, w: 0, h: 0, dpr: 1, clouds: [] };
+  // ---------------- Céu animado (canvas) → desenho em scene.js ----------------
+  const sky = { c: null, ctx: null, w: 0, h: 0, dpr: 1, clock: 0 };
   function initSky() {
     sky.c = $('sky');
     sky.ctx = sky.c.getContext('2d');
-    // nuvens fixas (gerador pseudoaleatório com semente → sempre iguais)
-    let seed = 7;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let i = 0; i < 11; i++) sky.clouds.push({ x: 0.12 + rnd() * 0.9, y: 0.08 + rnd() * 0.8, s: 0.6 + rnd() * 0.8 });
     const onResize = () => { resizeSky(); drawSky(); };
     sky.c.addEventListener('click', togglePlay); // clicar no céu também inicia/pausa
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(onResize).observe(sky.c);
@@ -464,186 +524,33 @@
     sky.w = r.width; sky.h = r.height; sky.dpr = dpr;
     return true;
   }
-
-  function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
-  function pill(ctx, x, y, text, bg, fg, align) {
-    ctx.font = '700 12px ' + (cssVar('--font-ui') || 'sans-serif');
-    const w = ctx.measureText(text).width + 16, h = 22;
-    const x0 = align === 'left' ? x : align === 'right' ? x - w : x - w / 2;
-    ctx.fillStyle = bg; roundRect(ctx, x0, y - h / 2, w, h, 11); ctx.fill();
-    ctx.fillStyle = fg || '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText(text, x0 + 8, y + 0.5);
-    return w;
-  }
-  function drawCloud(ctx, x, y, s) {
-    ctx.fillStyle = 'rgba(255,255,255,0.78)';
-    ctx.beginPath();
-    for (const [cx, cy, rx, ry] of [[0, 0, 34, 12], [-16, -6, 16, 11], [10, -10, 20, 14]]) {
-      ctx.moveTo(x + (cx + rx) * s, y + cy * s); // sub-caminho separado: sem "fiapos" entre as elipses
-      ctx.ellipse(x + cx * s, y + cy * s, rx * s, ry * s, 0, 0, Math.PI * 2);
-    }
-    ctx.fill();
-  }
-  // paraquedista: canopy = 0 (queda livre, de barriga) até 1 (velame cheio, em pé)
-  function drawDiver(ctx, x, y, s, canopy, accent) {
-    const suit = '#e7ebf0', dark = '#2b3440';
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    if (canopy <= 0) {
-      // posição "barriga para baixo", braços e pernas abertos
-      ctx.strokeStyle = dark; ctx.lineWidth = 3.2 * s;
-      ctx.beginPath(); ctx.moveTo(x - 9 * s, y); ctx.lineTo(x - 18 * s, y - 9 * s); ctx.stroke();   // braço
-      ctx.beginPath(); ctx.moveTo(x + 9 * s, y); ctx.lineTo(x + 16 * s, y - 9 * s); ctx.lineTo(x + 22 * s, y - 12 * s); ctx.stroke(); // perna
-      ctx.fillStyle = suit; ctx.strokeStyle = dark; ctx.lineWidth = 1.6 * s;
-      roundRect(ctx, x - 12 * s, y - 4 * s, 24 * s, 9 * s, 4 * s); ctx.fill(); ctx.stroke(); // tronco
-      ctx.fillStyle = accent; roundRect(ctx, x - 7 * s, y - 8 * s, 13 * s, 5 * s, 2 * s); ctx.fill(); // mochila
-      ctx.fillStyle = '#9aa6b5'; ctx.beginPath(); ctx.arc(x - 16 * s, y + 1 * s, 5 * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); // capacete
-      return;
-    }
-    // velame
-    const cw = 44 * s * (0.35 + 0.65 * canopy), ch = 15 * s * (0.4 + 0.6 * canopy);
-    const cy = y - 44 * s;
-    ctx.strokeStyle = 'rgba(40,50,60,.55)'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (const f of [-1, -0.45, 0.45, 1]) { ctx.moveTo(x + f * cw, cy + 2 * s); ctx.lineTo(x + f * 3 * s, y - 12 * s); }
-    ctx.stroke();
-    ctx.save();
-    ctx.beginPath(); ctx.ellipse(x, cy, cw, ch, 0, Math.PI, 0); ctx.closePath(); ctx.clip();
-    const cells = 6;
-    for (let i = 0; i < cells; i++) {
-      ctx.fillStyle = i % 2 ? '#f3f4f6' : accent;
-      ctx.fillRect(x - cw + (2 * cw * i) / cells, cy - ch - 1, (2 * cw) / cells + 0.5, ch + 2);
-    }
-    ctx.restore();
-    ctx.strokeStyle = dark; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.ellipse(x, cy, cw, ch, 0, Math.PI, 0); ctx.closePath(); ctx.stroke();
-    // corpo em pé
-    ctx.strokeStyle = dark; ctx.lineWidth = 3 * s;
-    ctx.beginPath(); ctx.moveTo(x - 3 * s, y - 10 * s); ctx.lineTo(x - 5 * s, y - 16 * s); ctx.moveTo(x + 3 * s, y - 10 * s); ctx.lineTo(x + 5 * s, y - 16 * s); ctx.stroke(); // braços
-    ctx.beginPath(); ctx.moveTo(x - 2 * s, y + 2 * s); ctx.lineTo(x - 3 * s, y + 10 * s); ctx.moveTo(x + 2 * s, y + 2 * s); ctx.lineTo(x + 3 * s, y + 10 * s); ctx.stroke(); // pernas
-    ctx.fillStyle = suit; ctx.lineWidth = 1.6 * s;
-    roundRect(ctx, x - 5 * s, y - 11 * s, 10 * s, 15 * s, 4 * s); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#9aa6b5'; ctx.beginPath(); ctx.arc(x, y - 15 * s, 4.5 * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  }
-  function drawBurst(ctx, x, y, r) {
-    ctx.beginPath();
-    for (let i = 0; i < 24; i++) {
-      const ang = (i / 24) * Math.PI * 2, rr = i % 2 ? r * 0.5 : r;
-      ctx.lineTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.7);
-    }
-    ctx.closePath();
-    ctx.fillStyle = '#ffb020'; ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x, y, r * 0.42, r * 0.3, 0, 0, Math.PI * 2); ctx.fillStyle = '#e2401c'; ctx.fill();
-  }
-  function speedLines(ctx, x, y, v, color) {
-    if (v < 3) return;
-    const L = Math.min(46, 6 + v * 0.45);
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = 0.55;
-    ctx.beginPath();
-    for (const dx of [-12, 0, 12]) { ctx.moveTo(x + dx, y - 16 - (dx === 0 ? 6 : 0)); ctx.lineTo(x + dx, y - 16 - L - (dx === 0 ? 6 : 0)); }
-    ctx.stroke(); ctx.globalAlpha = 1;
-  }
-
   function drawSky() {
     if (!sky.ctx || !state.sim) return;
     if (!resizeSky()) return; // aba escondida
-    const ctx = sky.ctx, W = sky.w, H = sky.h, p = state.p, t = state.t;
-    const sim = state.sim, vac = state.vac;
-    ctx.setTransform(sky.dpr, 0, 0, sky.dpr, 0, 0);
-
-    const top = 64, groundH = 40, rulerW = 74;
-    const plotH = H - top - groundH;
-    const groundY = H - groundH;
-    const yOf = (alt) => top + (1 - Math.max(0, alt) / p.h0) * plotH;
-    const s = Math.min(1.5, Math.max(0.85, H / 620));
-
-    // céu
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#2f6fc4'); g.addColorStop(0.55, '#86bbea'); g.addColorStop(1, '#d9edfb');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    const cs = Math.min(1.4, W / 700);
-    for (const cl of sky.clouds) drawCloud(ctx, rulerW + cl.x * (W - rulerW), top + cl.y * plotH, cl.s * cs);
-
-    // régua de altitude
-    ctx.fillStyle = 'rgba(255,255,255,0.62)'; ctx.fillRect(0, 0, rulerW, groundY);
-    ctx.strokeStyle = '#0b0b0c'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(rulerW - 1, top); ctx.lineTo(rulerW - 1, groundY); ctx.stroke();
-    const step = niceStep(p.h0, 8);
-    ctx.font = '700 11px ' + (cssVar('--font-ui') || 'sans-serif');
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#1f2a37';
-    for (let a = 0; a <= p.h0 + 1e-9; a += step / 2) {
-      const y = Math.round(yOf(a)) + 0.5;
-      const major = Math.abs(a / step - Math.round(a / step)) < 1e-6;
-      ctx.lineWidth = major ? 2 : 1;
-      ctx.beginPath(); ctx.moveTo(rulerW - (major ? 12 : 7), y); ctx.lineTo(rulerW, y); ctx.stroke();
-      if (major && a > 0) ctx.fillText(fmt(a, 0) + ' m', rulerW - 16, y); // 0 m = faixa do solo
-    }
-
-    // faixas e títulos
-    const xa = rulerW + (W - rulerW) * 0.3, xb = rulerW + (W - rulerW) * 0.72;
-    pill(ctx, xa, 20, 'SEM RESISTÊNCIA DO AR', COLOR.vac);
-    pill(ctx, xb, 20, 'COM RESISTÊNCIA DO AR', COLOR.real);
-
-    // saída do avião
-    ctx.setLineDash([4, 6]); ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(rulerW, yOf(p.h0)); ctx.lineTo(W, yOf(p.h0)); ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = '600 11px ' + (cssVar('--font-ui') || 'sans-serif'); ctx.fillStyle = '#fff'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
-    ctx.fillText('saída do avião · ' + fmt(p.h0, 0) + ' m', W - 8, yOf(p.h0) - 3);
-
-    // linha de abertura do paraquedas
-    if (p.parachute) {
-      const y = yOf(p.deployAlt);
-      ctx.setLineDash([8, 6]); ctx.strokeStyle = COLOR.orange; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(xb - (W - rulerW) * 0.2, y); ctx.lineTo(W, y); ctx.stroke(); ctx.setLineDash([]);
-      pill(ctx, W - 8, y - 14, 'abrir aos ' + fmt(p.deployAlt, 0) + ' m', COLOR.orange, '#fff', 'right');
-    }
-
-    // solo
-    const gg = ctx.createLinearGradient(0, groundY, 0, H);
-    gg.addColorStop(0, '#5aa35a'); gg.addColorStop(1, '#2f6e34');
-    ctx.fillStyle = gg; ctx.fillRect(0, groundY, W, groundH);
-    ctx.font = '800 12px ' + (cssVar('--font-ui') || 'sans-serif'); ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText('SOLO · 0 m', 10, groundY + groundH / 2);
-
-    // rastro (trajetória já percorrida)
+    const p = state.p, t = state.t, sim = state.sim, vac = state.vac;
     const sv = P.sampleAt(vac, t), sr = P.sampleAt(sim, t);
-    ctx.lineWidth = 3; ctx.globalAlpha = 0.35;
-    ctx.strokeStyle = COLOR.vac; ctx.beginPath(); ctx.moveTo(xa, yOf(p.h0)); ctx.lineTo(xa, yOf(sv.y)); ctx.stroke();
-    ctx.strokeStyle = COLOR.real; ctx.beginPath(); ctx.moveTo(xb, yOf(p.h0)); ctx.lineTo(xb, yOf(sr.y)); ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    // --- paraquedista A: sem resistência ---
-    if (t >= vac.tEnd - 1e-6) {
-      drawBurst(ctx, xa, groundY, 30 * s);
-      pill(ctx, xa, groundY - 44 * s, 'IMPACTO · ' + fmt(vac.landing.v, 0) + ' m/s', COLOR.vac);
-    } else {
-      const y = yOf(sv.y) - 6 * s;
-      speedLines(ctx, xa, y, sv.v, '#ffffff');
-      drawDiver(ctx, xa, y, s, 0, COLOR.vac);
-      pill(ctx, xa + 30 * s, y, fmt(sv.v, 1) + ' m/s', 'rgba(11,11,12,.82)', '#fff', 'left');
-    }
-
-    // --- paraquedista B: com resistência ---
     const dep = sim.deploy;
-    const canopy = dep && t >= dep.t ? Math.min(1, (t - dep.t) / sim.inflate) : 0;
     const landed = t >= sim.tEnd - 1e-6;
-    const vLand = sim.landing ? sim.landing.v : sr.v;
-    if (landed && vLand > 12) {
-      drawBurst(ctx, xb, groundY, 26 * s);
-      pill(ctx, xb, groundY - 44 * s, 'IMPACTO · ' + fmt(vLand, 1) + ' m/s', COLOR.vac);
-    } else {
-      const y = yOf(sr.y) - (canopy > 0 ? 10 * s : 6 * s);
-      speedLines(ctx, xb, canopy > 0 ? y - 60 * s : y, sr.v, '#ffffff');
-      drawDiver(ctx, xb, y, s, canopy, COLOR.orange);
-      if (landed) pill(ctx, xb + 26 * s, y - 4 * s, (vLand <= 7 ? '✓ POUSO · ' : 'POUSO DURO · ') + fmt(vLand, 1) + ' m/s', vLand <= 7 ? COLOR.green : COLOR.orange, '#fff', 'left');
-      else pill(ctx, xb + 30 * s, y, fmt(sr.v, 1) + ' m/s', 'rgba(11,11,12,.82)', '#fff', 'left');
-    }
+    const frac = dep && t >= dep.t ? P.deployFraction(t - dep.t) : null;
+    let deployLineAlt = null, deployLineLabel = '';
+    if (p.deployMode === 'auto') { deployLineAlt = p.deployAlt; deployLineLabel = 'abrir aos ' + fmt(p.deployAlt, 0) + ' m'; }
+    else if (dep && t >= dep.t) { deployLineAlt = dep.y; deployLineLabel = (dep.by === 'aad' ? 'AAD abriu aos ' : 'abriu aos ') + fmt(dep.y, 0) + ' m'; }
+    else if (p.deployMode === 'manual' && p.aad) { deployLineAlt = P.AAD_ALT; deployLineLabel = 'AAD · ' + P.AAD_ALT + ' m'; }
+    let message = null;
+    if (t >= vac.tEnd && t < vac.tEnd + 6 && state.camera === 'follow') message = { text: 'O paraquedista SEM ar acabou de bater no chão a ' + fmt(vac.landing.v, 0) + ' m/s', bg: COLOR.vac };
+    else if (p.deployMode === 'manual' && !(dep && t >= dep.t) && !landed && t > 0 && sr.y < 900) message = { text: '⚠ ABRA O PARAQUEDAS! (tecla P)', bg: COLOR.vac };
+    const S = {
+      p, t, sim, vac, sv, sr, frac, landed,
+      vacLanded: t >= vac.tEnd - 1e-6,
+      vLand: sim.landing ? sim.landing.v : sr.v,
+      collapse: landed && sim.landing ? Math.min(1, (t - sim.landing.t) / 2.5) : 0,
+      deployed: !!(dep && t >= dep.t),
+      mode: p.deployMode, camera: state.camera,
+      deployLineAlt, deployLineLabel, message,
+      time: t + sky.clock, fmt, niceStep
+    };
+    sky.ctx.setTransform(sky.dpr, 0, 0, sky.dpr, 0, 0);
+    Scene.draw(sky.ctx, sky.w, sky.h, S);
   }
 
   // ---------------- Abas e atalhos ----------------
@@ -681,6 +588,11 @@
       const simActive = !$('tab-sim').hidden;
       if (e.key === ' ' && !typing && simActive) { e.preventDefault(); togglePlay(); }
       else if ((e.key === 'r' || e.key === 'R') && simActive && tag !== 'INPUT') { reset(); }
+      else if ((e.key === 'p' || e.key === 'P') && simActive) { e.preventDefault(); openChute(); }
+      else if ((e.key === 'c' || e.key === 'C') && simActive && tag !== 'INPUT') {
+        state.camera = state.camera === 'follow' ? 'overview' : 'follow';
+        $('sel-cam').value = state.camera; renderFrame();
+      }
       else if (/^[1-4]$/.test(e.key) && !(tag === 'INPUT' && e.target.type !== 'range' && e.target.type !== 'checkbox')) { selectTab(TABS[+e.key - 1]); }
       else if ((e.key === 'f' || e.key === 'F') && tag !== 'INPUT') {
         try {
@@ -695,7 +607,7 @@
 
   // ---------------- Início ----------------
   function init() {
-    if (!P || !window.LineChart) {
+    if (!P || !window.LineChart || !window.Scene) {
       document.body.insertAdjacentHTML('afterbegin', '<p class="noscript">Erro ao carregar os scripts. Verifique se as pastas js/ e css/ estão junto do index.html.</p>');
       return;
     }
@@ -706,6 +618,7 @@
     bindReguas();
     bindTabs();
     $('sel-speed').value = String(state.speed);
+    $('sel-cam').value = state.camera;
     recompute();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

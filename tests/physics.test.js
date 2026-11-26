@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const P = require('../js/physics.js');
 
-const p = { ...P.DEFAULTS };
+const p = { ...P.DEFAULTS, deployMode: 'auto' };
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} ≉ ${b} (±${tol})`);
 
 test('Régua 1 — queda sem resistência', () => {
@@ -46,7 +46,7 @@ test('Régua 3 — velocidade terminal (valores do slide)', () => {
 });
 
 test('RK4 bate com a solução analítica (sem paraquedas)', () => {
-  const q = { ...p, parachute: false };
+  const q = { ...p, deployMode: 'never' };
   const sim = P.simulate(q);
   for (const t of [1, 5, 12.25, 30, 60]) {
     const num = P.sampleAt(sim, t), ana = P.dragAt(t, q);
@@ -73,10 +73,37 @@ test('Simulação com paraquedas pousa em segurança', () => {
   }
 });
 
+test('Abertura manual e dispositivo de segurança (AAD)', () => {
+  // botão apertado aos 50 s
+  const man = P.simulate({ ...p, deployMode: 'manual', deployTime: 50 });
+  assert.equal(man.deploy.by, 'manual');
+  near(man.deploy.t, 50, 1e-9, 'instante do botão');
+  assert.ok(man.landing.v < 7, 'pouso suave');
+  // trajetória idêntica antes do botão
+  const free = P.simulate({ ...p, deployMode: 'never' });
+  near(P.sampleAt(man, 49).y, P.sampleAt(free, 49).y, 1e-9, 'antes do botão nada muda');
+  // esqueceu de abrir → AAD abre a 225 m e salva
+  const aad = P.simulate({ ...p, deployMode: 'manual', deployTime: null, aad: true });
+  assert.equal(aad.deploy.by, 'aad');
+  near(aad.deploy.y, P.AAD_ALT, 0.5, 'altitude do AAD');
+  assert.ok(aad.landing.v < 12, `AAD evita impacto fatal (v=${aad.landing.v.toFixed(1)})`);
+  // sem AAD e sem botão → impacto
+  const sem = P.simulate({ ...p, deployMode: 'manual', deployTime: null, aad: false });
+  assert.equal(sem.deploy, null);
+  near(sem.landing.v, P.terminalVelocity(p), 0.05, 'impacto em v_t');
+  // nunca abrir ignora o AAD
+  assert.equal(P.simulate({ ...p, deployMode: 'never', aad: true }).deploy, null);
+  // fases da abertura
+  assert.deepEqual(P.deployFraction(-1), { pilot: 0, stretch: 0, fill: 0 });
+  assert.equal(P.deployFraction(P.PHASE.full).fill, 1);
+});
+
 test('Casos-limite não quebram', () => {
   const casos = [
     { ...p, h0: 1000, deployAlt: 800 },
     { ...p, deployAlt: 5000 },             // abertura acima da saída → abre na hora
+    { ...p, deployMode: 'manual', deployTime: 0.001 },
+    { ...p, deployMode: 'manual', deployTime: 1e6 },
     { ...p, m: 50, area: 1.2, cd: 1.5 },
     { ...p, m: 150, area: 0.3, cd: 0.5, h0: 6000 },
     { ...p, varyDensity: true },
@@ -90,8 +117,8 @@ test('Casos-limite não quebram', () => {
     assert.ok(Number.isFinite(s.v) && Number.isFinite(s.y));
   }
   // densidade variável ⇒ cai mais rápido no alto
-  const a = P.simulate({ ...p, parachute: false });
-  const b = P.simulate({ ...p, parachute: false, varyDensity: true });
+  const a = P.simulate({ ...p, deployMode: 'never' });
+  const b = P.simulate({ ...p, deployMode: 'never', varyDensity: true });
   assert.ok(b.maxV > a.maxV);
   // sampleAt fora do intervalo
   const sim = P.simulate(p);
