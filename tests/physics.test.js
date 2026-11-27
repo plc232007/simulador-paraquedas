@@ -126,3 +126,43 @@ test('Casos-limite não quebram', () => {
   assert.equal(P.sampleAt(sim, 1e9).y, 0);
   assert.equal(P.sampleAt(sim, NaN).y, p.h0);
 });
+
+test('Modo jogo: integração em tempo real bate com o modelo dos slides', () => {
+  const q = { ...p, deployMode: 'manual', aad: false };
+  const st = P.createJump(q, 0, 0);
+  const run = (until, input) => { while (st.t < until - 1e-9 && !st.landed) P.stepJump(st, q, input || {}, P.GAME.dt); };
+  run(12.25);
+  const ana = P.dragAt(12.25, q);
+  near(st.vy, ana.v, 0.01, 'v(12,25)');
+  near(st.y, ana.y, 0.05, 'y(12,25)');
+  // abre aos 50 s e compara com a simulação pré-calculada
+  run(50); P.stepJump(st, q, { open: true }, P.GAME.dt);
+  assert.equal(st.deployBy, 'manual');
+  const ref = P.simulate({ ...q, deployTime: 50 });
+  run(80);
+  near(st.y, P.sampleAt(ref, st.t).y, 0.6, 'y(80) com paraquedas');
+  run(1e4);
+  assert.ok(st.landed && st.landed.vy < 7, 'pouso suave');
+  // vento empurra para o lado; impulso do avião decai
+  const w = P.createJump(q, 0, 3);
+  for (let i = 0; i < 3000; i++) P.stepJump(w, q, {}, P.GAME.dt);
+  assert.ok(w.vx > 3 && w.vx < 12, `vx tende ao vento (${w.vx.toFixed(2)})`);
+});
+
+test('Modo jogo: flare reduz a velocidade de pouso e o AAD funciona', () => {
+  const q = { ...p, deployMode: 'manual', aad: true };
+  const land = (flareBelow) => {
+    const st = P.createJump(q, 0, 0);
+    let i = 0;
+    while (!st.landed && i++ < 1e6) P.stepJump(st, q, { open: st.y < 1200, flare: st.y < flareBelow }, P.GAME.dt);
+    return st.landed.vy;
+  };
+  const normal = land(-1), flare = land(8);
+  assert.ok(flare < normal - 1, `flare ajuda (${normal.toFixed(2)} → ${flare.toFixed(2)})`);
+  const early = land(200); // frear cedo demais gasta a energia
+  assert.ok(early > flare, 'flare cedo demais não ajuda');
+  const st = P.createJump(q, 0, 0);
+  while (!st.landed) P.stepJump(st, q, {}, P.GAME.dt);
+  assert.equal(st.deployBy, 'aad');
+  assert.ok(st.landed.vy < 7);
+});

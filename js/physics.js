@@ -217,6 +217,92 @@
     };
   }
 
+  // ---------- Modo jogo: integração em tempo real (vertical + horizontal) ----------
+  // Vertical: mesmo modelo dos slides (m·dv/dt = m·g − ½ρC_dA·v²), integrado com RK4.
+  // Horizontal: impulso do avião + vento; com o velame aberto o paraquedista "voa" a ~9 m/s
+  // na direção para onde aponta (setas giram o velame) e o flare troca velocidade por sustentação.
+  const GAME = Object.freeze({
+    dt: 0.01, planeSpeed: 40, canopyAirspeed: 9, turnRate: 1.1, steerTau: 0.8,
+    flareCda: 3.2, flareDrain: 0.4, flareRefill: 0.15, flareSpeedFactor: 0.35
+  });
+
+  function createJump(p, x0, wind) {
+    return {
+      t: 0, x: x0, y: p.h0, vx: GAME.planeSpeed, vy: 0, ay: p.g,
+      tDeploy: null, deployBy: null, deployY: null,
+      heading: 0, steer: 0, flareE: 1, flaring: false,
+      wind: wind || 0, maxDecel: 0, landed: null
+    };
+  }
+  function jumpCda(st, p, t, flareMult) {
+    const cdaBody = p.cd * p.area;
+    if (st.tDeploy === null || t < st.tDeploy) return cdaBody;
+    const cdaCanopy = Math.max(cdaBody + PILOT_CDA, p.canopyCd * p.canopyArea);
+    const f = deployFraction(t - st.tDeploy);
+    const pilot = PILOT_CDA * f.pilot;
+    const base = cdaBody + pilot + f.fill * (cdaCanopy - cdaBody - pilot);
+    return base * (1 + (flareMult - 1) * f.fill);
+  }
+  // input = { open: bool (um toque), steer: −1|0|1, flare: bool (segurar) }
+  function stepJump(st, p, input, dt) {
+    if (st.landed) return st;
+    dt = dt || GAME.dt;
+    const mode = deployModeOf(p);
+    if (st.tDeploy === null && mode !== 'never') {
+      let by = null;
+      if (input.open && mode === 'manual') by = 'manual';
+      else if (mode === 'auto' && st.y <= p.deployAlt) by = 'auto';
+      else if (p.aad && st.y <= AAD_ALT && st.vy > AAD_SPEED) by = 'aad';
+      if (by) { st.tDeploy = st.t; st.deployBy = by; st.deployY = st.y; }
+    }
+    const f = st.tDeploy === null ? null : deployFraction(st.t - st.tDeploy);
+    const canopyOpen = !!(f && f.fill > 0.5);
+
+    // flare: gasta "energia" enquanto segura, recarrega devagar
+    st.flaring = !!(input.flare && canopyOpen && st.flareE > 0.02);
+    if (st.flaring) st.flareE = Math.max(0, st.flareE - GAME.flareDrain * dt);
+    else st.flareE = Math.min(1, st.flareE + GAME.flareRefill * dt);
+    const flareMult = st.flaring ? 1 + GAME.flareCda * st.flareE : 1;
+
+    // vertical (RK4)
+    const acc = (t, y, v) => {
+      const rho = p.varyDensity ? densityAt(Math.max(0, y), p.rho, p.g) : p.rho;
+      return p.g - (0.5 * rho * jumpCda(st, p, t, flareMult) * v * Math.abs(v)) / p.m;
+    };
+    const t = st.t, y = st.y, v = st.vy;
+    const k1v = acc(t, y, v), k1y = -v;
+    const k2v = acc(t + dt / 2, y + (dt / 2) * k1y, v + (dt / 2) * k1v), k2y = -(v + (dt / 2) * k1v);
+    const k3v = acc(t + dt / 2, y + (dt / 2) * k2y, v + (dt / 2) * k2v), k3y = -(v + (dt / 2) * k2v);
+    const k4v = acc(t + dt, y + dt * k3y, v + dt * k3v), k4y = -(v + dt * k3v);
+    const vNew = v + (dt / 6) * (k1v + 2 * k2v + 2 * k3v + k4v);
+    const yNew = y + (dt / 6) * (k1y + 2 * k2y + 2 * k3y + k4y);
+
+    // horizontal
+    st.steer = input.steer || 0;
+    if (canopyOpen) st.heading = clamp(st.heading + st.steer * GAME.turnRate * dt, -Math.PI / 2, Math.PI / 2);
+    if (st.tDeploy === null) {
+      const rel = st.vx - st.wind, k = (0.5 * p.rho * p.cd * p.area) / p.m;
+      st.vx -= k * Math.abs(rel) * rel * dt;
+    } else {
+      const air = GAME.canopyAirspeed * (st.flaring ? GAME.flareSpeedFactor : 1) * f.fill;
+      const target = st.wind + air * Math.sin(st.heading);
+      st.vx += (target - st.vx) * (1 - Math.exp(-dt / GAME.steerTau));
+    }
+    const xNew = st.x + st.vx * dt;
+
+    if (yNew <= 0) {
+      const fr = y / (y - yNew);
+      st.t = t + fr * dt; st.y = 0; st.x = st.x + fr * (xNew - st.x); st.vy = v + fr * (vNew - v);
+      st.landed = { t: st.t, vy: st.vy, vx: st.vx, x: st.x };
+      return st;
+    }
+    st.t = t + dt; st.y = yNew; st.vy = vNew; st.x = xNew;
+    st.ay = acc(st.t, st.y, st.vy);
+    st.maxDecel = Math.max(st.maxDecel, -st.ay);
+    return st;
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
   // Trajetória sem resistência no mesmo formato da simulação (para gráficos/animação)
   function vacuumTrajectory(p) {
     const imp = vacuumImpact(p);
@@ -257,6 +343,7 @@
     vacuumAt, vacuumImpact,
     dragK, terminalVelocity, dragAt, timeToFraction, dragGroundTime,
     simulate, vacuumTrajectory, sampleAt,
-    deployFraction, PHASE, AAD_ALT, AAD_SPEED
+    deployFraction, PHASE, AAD_ALT, AAD_SPEED,
+    GAME, createJump, stepJump
   };
 });
